@@ -1,6 +1,6 @@
 # bookmark-manager
 ## How to use
-- [参考ページ](https://www.toukei-kentei.jp/grade/grade2/)
+- [参考ページ](https://qiita.com/Nozomuts/items/fc1d4f8fc995d830817d#%E5%8B%95%E4%BD%9C%E7%A2%BA%E8%AA%8D)
 - このリポジトリをクローンするか、ZIPでダウンロードして解凍しておく
 - Chromeのアドレスバーに以下を入力して開く
   - chrome://extensions
