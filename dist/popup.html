@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <style>
+    body {
+      width: 300px;
+      padding: 10px;
+      font-family: Arial, sans-serif;
+    }
+    .status {
+      margin-bottom: 10px;
+      padding: 5px;
+      border-radius: 4px;
+      background-color: #f0f0f0;
+    }
+    .folder-list {
+      max-height: 300px;
+      overflow-y: auto;
+    }
+    .folder-item {
+      padding: 8px;
+      margin: 4px 0;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+    .folder-item:hover {
+      background-color: #f5f5f5;
+    }
+    .folder-item.selected {
+      background-color: #e3f2fd;
+      border-color: #2196f3;
+    }
+    .similarity-score {
+      float: right;
+      color: #666;
+      font-size: 0.9em;
+    }
+  </style>
+</head>
+<body>
+  <div class="status" id="status">ページを分析中...</div>
+  <div class="folder-list" id="folderList"></div>
+  <script src="popup.js"></script>
+</body>
+</html> 
