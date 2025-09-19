@@ -1,179 +1,110 @@
-// tfidfFolderClassifier.ts
+// background.ts (MV3 SW)
+import { pipeline, env, Tensor } from '@huggingface/transformers';
 
-import { updateStatus } from './popup';
-import { TinySegmenter } from './tinySegmenter';
-import { tokenize } from 'wakachigaki';
+// 1) モデル選択（まずは軽量＆多言語安定の MiniLM、E5に差し替えも可）
+const MODEL = 'Xenova/paraphrase-multilingual-MiniLM-L12-v2';
+// 例: const MODEL = 'Xenova/multilingual-e5-small';
 
-const segmenter = new TinySegmenter();
-// ---- 型定義 ----
-type Vector = { [term: string]: number };
-interface FolderData {
-  id: string;
-  title: string;
-  tf: Vector;
-  tfidf: Vector;
-}
+// 2) WebGPU がダメでも WASM に自動フォールバック
+const DEVICE: 'webgpu' | 'wasm' = 'wasm';
 
-// ---- ユーティリティ ----
-function tokenizeText(text: string): string[] {
-  // return text.toLowerCase().replace(/[^\w\s]/g, '').split(/\s+/).filter(Boolean);
-  // return segmenter.segment(text)
-  return tokenize(text)
-}
+// 3) ローカル同梱に切り替える場合
+// env.allowLocalModels = true;
+// env.localModelPath = chrome.runtime.getURL('models/');
 
-function termFrequency(tokens: string[]): Vector {
-  const tf: Vector = {};
-  const len = tokens.length;
-  tokens.forEach(t => tf[t] = (tf[t] || 0) + 1);
-  Object.keys(tf).forEach(t => tf[t] /= len);
-  return tf;
-}
-
-function computeIDF(allTFs: Vector[]): Vector {
-  const df: Vector = {};
-  const N = allTFs.length;
-  allTFs.forEach(tf => {
-    Object.keys(tf).forEach(term => df[term] = (df[term] || 0) + 1);
-  });
-  const idf: Vector = {};
-  Object.keys(df).forEach(term => {
-    idf[term] = Math.log((N + 1) / (1 + df[term])) + 1;
-  });
-  return idf;
-}
-
-function computeTFIDF(tf: Vector, idf: Vector): Vector {
-  const tfidf: Vector = {};
-  Object.keys(idf).forEach(term => {
-    tfidf[term] = (tf[term] || 0) * idf[term];
-  });
-  return tfidf;
-}
-
-function cosineSimilarity(vecA: Vector, vecB: Vector): number {
-  let dot = 0, normA = 0, normB = 0;
-  const terms = new Set([...Object.keys(vecA), ...Object.keys(vecB)]);
-  terms.forEach(term => {
-    const a = vecA[term] || 0;
-    const b = vecB[term] || 0;
-    dot += a * b;
-    normA += a * a;
-    normB += b * b;
-  });
-  return (normA && normB) ? dot / (Math.sqrt(normA) * Math.sqrt(normB)) : 0;
-}
-
-// フォルダを再帰的に処理する関数
-function processBookmarkFolders(node: chrome.bookmarks.BookmarkTreeNode, allTFs: Vector[]): FolderData[] {
-  const folders: FolderData[] = [];
-  
-  // 現在のノードがフォルダで、子要素を持つ場合
-  if (node.children) {
-    // 現在のフォルダの情報を収集
-    const titles = node.children.map(c => c.title).join("");
-    const tokens = tokenizeText(titles);
-    console.log(`フォルダ「${node.title}」のトークン:`, tokens);
-    const tf = termFrequency(tokens);
-    allTFs.push(tf);
-    folders.push({ id: node.id, title: node.title, tf, tfidf: {} });
-
-    // 子フォルダを再帰的に処理
-    node.children.forEach(child => {
-      if (child.children) {
-        folders.push(...processBookmarkFolders(child, allTFs));
-      }
-    });
+let extractorPromise: ReturnType<typeof pipeline> | null = null;
+async function getExtractor() {
+  if (!extractorPromise) {
+    extractorPromise = pipeline('feature-extraction', MODEL, { device: DEVICE });
   }
-  
-  return folders;
+  return extractorPromise;
 }
 
-// ---- メインロジック ----
-async function main(request: any, sender: any, sendResponse: any) {
-  if (request.action !== 'BOOKMARK_MANAGER') return;
+function l2norm(x: number[]) {
+  const s = Math.sqrt(x.reduce((a, b) => a + b * b, 0)) || 1;
+  return x.map(v => v / s);
+}
+function cosine(a: number[], b: number[]) {
+  let s = 0;
+  for (let i = 0; i < a.length; i++) s += a[i] * b[i];
+  return s;
+}
 
-  console.log(`メッセージを受信: ${request.action}`);
-  
-  // 現在のタブの情報を取得
-  const tabs = await chrome.tabs.query({ active: true, currentWindow: true }) as chrome.tabs.Tab[];
-  const activeTab = tabs[0];
-  
-  if (!activeTab?.id) {
-    sendResponse({ error: 'アクティブなタブが見つかりません' });
-    return;
+// E5 を使うなら prefix をここで付ける（非対称: query vs passage）
+const withPrefix = (text: string, kind: 'query' | 'passage') =>
+  MODEL.includes('multilingual-e5') ? `${kind}: ${text}` : text;
+
+async function embed(texts: string[], kind: 'query' | 'passage' = 'passage') {
+  const extractor = await getExtractor();
+  // mean pooling + L2 正規化（Transformers.js v3 はオプション指定が可能）
+  const output = await extractor(texts.map(t => withPrefix(t, kind)), {
+    pooling: 'mean',
+    normalize: true
+  }) as Tensor | Tensor[];
+  const arr = Array.isArray(output) ? output : [output];
+  return arr.map(t => Array.from(t.data as Float32Array));
+}
+
+// ------------- フォルダのベクトル（タイトル群の平均） -------------
+export type FolderVec = { folderId: string; name: string; vec: number[]; size: number };
+
+async function buildFolderCentroids(): Promise<FolderVec[]> {
+  const tree = await chrome.bookmarks.getTree();
+  const folders: chrome.bookmarks.BookmarkTreeNode[] = [];
+  const stack = [...tree];
+  while (stack.length) {
+    const n = stack.pop()!;
+    if (n.children?.length) {
+      folders.push(n);
+      stack.push(...n.children);
+    }
   }
 
-  // ページ取得
-  const pageData = await chrome.scripting.executeScript({
-    target: { tabId: activeTab.id },
-    func: () => ({
-      title: document.title,
-      body: document.body?.innerText?.slice(0, 1000) || ""
-    })
-  });
-  const pageText = `${pageData[0].result?.title} ${pageData[0].result?.body}`;
-  const pageTokens = tokenizeText(pageText);
-  console.log(`ページのトークン:`, pageTokens);
-  const pageTF = termFrequency(pageTokens);
-
-  // ストレージからIDFベクトル取得
-  const stored = await chrome.storage.local.get(["idf", "folders"]);
-  let idf: Vector = stored.idf;
-  let folders: FolderData[] = stored.folders || [];
-
-  // IDFベクトルがなければ初期化
-  if (/*!idf || Object.keys(idf).length === 0*/true) { // クリックのたびにIDFベクトルを再計算させている
-    const tree = await chrome.bookmarks.getTree() as chrome.bookmarks.BookmarkTreeNode[];
-    const allTFs: Vector[] = [];
-
-    // ブックマークツリーのルートから再帰的に処理
-    folders = processBookmarkFolders(tree[0], allTFs);
-
-    console.log(`処理したフォルダ数: ${folders.length}`);
-    console.log(`フォルダ一覧:`, folders.map(f => f.title));
-
-    idf = computeIDF(allTFs);
-    folders.forEach(f => f.tfidf = computeTFIDF(f.tf, idf));
-    await chrome.storage.local.set({ idf, folders });
+  const results: FolderVec[] = [];
+  for (const f of folders) {
+    const titles = (f.children ?? []).filter(c => c.url).map(c => c.title).slice(0, 200);
+    if (!titles.length) continue;
+    const embs = await embed(titles, 'passage');
+    // 平均
+    const dim = embs[0].length;
+    const mean = new Array(dim).fill(0);
+    for (const v of embs) for (let i = 0; i < dim; i++) mean[i] += v[i];
+    for (let i = 0; i < dim; i++) mean[i] /= embs.length;
+    results.push({ folderId: f.id, name: f.title, vec: l2norm(mean), size: titles.length });
   }
+  await chrome.storage.local.set({ [`centroids:${MODEL}`]: results });
+  return results;
+}
 
-  console.log(`idf vector:`, idf);
-  
-  // ページのTF-IDFベクトル作成
-  const pageTFIDF = computeTFIDF(pageTF, idf);
+async function loadCentroids(): Promise<FolderVec[]> {
+  const { [`centroids:${MODEL}`]: cached } = await chrome.storage.local.get(`centroids:${MODEL}`);
+  return (cached as FolderVec[]) ?? buildFolderCentroids();
+}
 
-  // 類似度計算
-  const folderScores: { folder: FolderData; score: number }[] = [];
-  folders.forEach(folder => {
-    const score = cosineSimilarity(pageTFIDF, folder.tfidf);
-    folderScores.push({ folder, score });
-  });
-
-  // スコアで降順ソートして上位3つを取得
-  const topFolders = folderScores
+// ------------- 提案（上位Kフォルダ） -------------
+export async function suggestFoldersForPage(input: { title: string; description?: string; headings?: string[] }, k = 5) {
+  const text = [input.title, input.description ?? '', ...(input.headings ?? []).slice(0, 10)]
+    .filter(Boolean).join('\n');
+  const [q] = await embed([text], 'query');
+  const centroids = await loadCentroids();
+  const scored = centroids.map(c => ({ ...c, score: cosine(q, c.vec) }))
     .sort((a, b) => b.score - a.score)
-    .slice(0, 3);
-
-  console.log(`上位3つのフォルダ:`, topFolders.map(f => ({
-    title: f.folder.title,
-    score: f.score
-  })));
-  
-  // 結果を送信
-  if (topFolders.length > 0) {
-    sendResponse({
-      folders: topFolders.map(({ folder, score }) => ({
-        id: folder.id,
-        title: folder.title,
-        score: score
-      }))
-    });
-  } else {
-    sendResponse({ error: '適切なフォルダが見つかりませんでした' });
-  }
+    .slice(0, k);
+  return scored;
 }
 
-chrome.runtime.onMessage.addListener( (request, sender, sendResponse) => {
-  main(request, sender, sendResponse);
-  return true;
+// メッセージハンドラ（content script から呼ぶ）
+chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+  (async () => {
+    if (msg.action === 'SUGGEST_FOLDERS') {
+      // TODO buildは毎回やらないようにする
+      await buildFolderCentroids();
+      const result = await suggestFoldersForPage(msg.payload);
+      sendResponse({ ok: true, result });
+    } else if (msg.action === 'REBUILD_CENTROIDS') {
+      await buildFolderCentroids();
+      sendResponse({ ok: true });
+    }
+  })();
+  return true; // async
 });

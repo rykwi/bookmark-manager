@@ -1,3 +1,5 @@
+import { FolderVec } from './background';
+
 // フォルダ情報のインターフェース
 export interface Folder {
   id: string;
@@ -13,9 +15,13 @@ export interface Tab {
 }
 
 // レスポンスのインターフェース
+// export interface AnalysisResponse {
+//   folders?: Folder[];
+//   error?: string;
+// }
 export interface AnalysisResponse {
-  folders?: Folder[];
-  error?: string;
+  ok: boolean;
+  result: FolderVec[];
 }
 
 // DOMの読み込みが完了したら実行
@@ -35,7 +41,10 @@ document.addEventListener('DOMContentLoaded', async (): Promise<void> => {
   try {
     // バックグラウンドスクリプトにメッセージを送信してページを分析
     const response: AnalysisResponse = await chrome.runtime.sendMessage({
-      action: 'BOOKMARK_MANAGER',
+      action: 'SUGGEST_FOLDERS',
+      payload: {
+        title: currentTab.title
+      }
       // url: currentTab.url,
       // title: currentTab.title
     });
@@ -49,13 +58,13 @@ document.addEventListener('DOMContentLoaded', async (): Promise<void> => {
     }
     
     // レスポンスを処理
-    if (response.error) {
-      showError(response.error);
-      return;
-    }
-    if (response.folders && response.folders.length > 0) {
+    // if (response.error) {
+    //   showError(response.error);
+    //   return;
+    // }
+    if (response.result && response.result.length > 0) {
       // 推奨フォルダを表示
-      displayRecommendedFolders(response.folders, currentTab);
+      displayRecommendedFolders(response.result, currentTab);
     } else {
       // 推奨フォルダが見つからない場合
       updateStatus('適切なフォルダが見つかりませんでした');
@@ -80,7 +89,7 @@ function showError(message: string): void {
 }
 
 // 推奨フォルダを表示する関数
-function displayRecommendedFolders(folders: Folder[], currentTab: Tab): void {
+function displayRecommendedFolders(folders: FolderVec[], currentTab: Tab): void {
   const folderListElement: HTMLElement | null = document.getElementById('folderList');
   if (!folderListElement) return;
   
@@ -91,30 +100,32 @@ function displayRecommendedFolders(folders: Folder[], currentTab: Tab): void {
   updateStatus('推奨フォルダ:');
   
   // 各フォルダのアイテムを作成
-  folders.forEach((folder: Folder) => {
+  folders.forEach((folder: FolderVec) => {
     const folderItem: HTMLDivElement = document.createElement('div');
     folderItem.className = 'folder-item';
-    folderItem.dataset.folderId = folder.id;
+    folderItem.dataset.folderId = folder.folderId;
     
     // フォルダ名と類似度スコアを表示
-    const similarityPercentage: number = Math.round(folder.score * 100);
+    // const similarityPercentage: number = Math.round(folder.score * 100);
+    // folderItem.innerHTML = `
+    //   <span class="folder-name">${folder.name}</span>
+    //   <span class="similarity-score">${similarityPercentage}%</span>
+    // `;
     folderItem.innerHTML = `
-      <span class="folder-name">${folder.title}</span>
-      <span class="similarity-score">${similarityPercentage}%</span>
+      <span class="folder-name">${folder.name}</span>
     `;
-    
     // クリックイベントを追加
     folderItem.addEventListener('click', async (): Promise<void> => {
       try {
         // ブックマークを作成
         await chrome.bookmarks.create({
-          parentId: folder.id,
+          parentId: folder.folderId,
           title: currentTab.title,
           url: currentTab.url
         });
         
         // 成功メッセージを表示
-        updateStatus(`「${folder.title}」にブックマークしました`);
+        updateStatus(`「${folder.name}」にブックマークしました`);
         
         // フォルダリストをクリア
         folderListElement.innerHTML = '';
