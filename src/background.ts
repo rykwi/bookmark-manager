@@ -1,5 +1,6 @@
 // background.ts (MV3 SW)
 import { pipeline, env, Tensor } from '@huggingface/transformers';
+import { saveCentroids, loadCentroids as loadCentroidsFromStorage } from './storage';
 
 // 1) モデル選択（まずは軽量＆多言語安定の MiniLM、E5に差し替えも可）
 const MODEL = 'Xenova/paraphrase-multilingual-MiniLM-L12-v2';
@@ -72,12 +73,12 @@ async function buildFolderCentroids(): Promise<FolderVec[]> {
     for (let i = 0; i < dim; i++) mean[i] /= embs.length;
     results.push({ folderId: f.id, name: f.title, vec: l2norm(mean), size: titles.length });
   }
-  await chrome.storage.local.set({ [`centroids:${MODEL}`]: results });
+  await saveCentroids(MODEL, results);
   return results;
 }
 
 async function loadCentroids(): Promise<FolderVec[]> {
-  const { [`centroids:${MODEL}`]: cached } = await chrome.storage.local.get(`centroids:${MODEL}`);
+  const cached = await loadCentroidsFromStorage(MODEL);
   return (cached as FolderVec[]) ?? buildFolderCentroids();
 }
 
@@ -98,7 +99,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   (async () => {
     if (msg.action === 'SUGGEST_FOLDERS') {
       // TODO buildは毎回やらないようにする
-      await buildFolderCentroids();
+      // await buildFolderCentroids();
       const result = await suggestFoldersForPage(msg.payload);
       sendResponse({ ok: true, result });
     } else if (msg.action === 'REBUILD_CENTROIDS') {

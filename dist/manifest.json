@@ -7,6 +7,7 @@
     "bookmarks",
     "activeTab",
     "storage",
+    "unlimitedStorage",
     "scripting",
     "offscreen"
   ],
