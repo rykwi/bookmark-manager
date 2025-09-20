@@ -42,9 +42,10 @@ document.addEventListener('DOMContentLoaded', async (): Promise<void> => {
     // バックグラウンドスクリプトにメッセージを送信してページを分析
     const response: AnalysisResponse = await chrome.runtime.sendMessage({
       action: 'SUGGEST_FOLDERS',
-      payload: {
-        title: currentTab.title
-      }
+      // payload: {
+      //   title: currentTab.title,
+      //   content: currentTab
+      // }
       // url: currentTab.url,
       // title: currentTab.title
     });
