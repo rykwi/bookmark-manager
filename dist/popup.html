@@ -37,10 +37,36 @@
       color: #666;
       font-size: 0.9em;
     }
+    .button-container {
+      display: flex;
+      gap: 10px;
+      margin-bottom: 10px;
+    }
+    .action-button {
+      flex: 1;
+      padding: 10px;
+      border: none;
+      border-radius: 4px;
+      background-color: #2196f3;
+      color: white;
+      cursor: pointer;
+      font-size: 14px;
+    }
+    .action-button:hover {
+      background-color: #1976d2;
+    }
+    .action-button:disabled {
+      background-color: #ccc;
+      cursor: not-allowed;
+    }
   </style>
 </head>
 <body>
-  <div class="status" id="status">ページを分析中...</div>
+  <div class="status" id="status">操作を選択してください</div>
+  <div class="button-container">
+    <button id="rebuildButton" class="action-button">フォルダ再構築</button>
+    <button id="suggestButton" class="action-button">推薦</button>
+  </div>
   <div class="folder-list" id="folderList"></div>
   <script src="popup.js"></script>
 </body>
